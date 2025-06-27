@@ -4,198 +4,263 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>  
-#include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
-#include <sys/time.h>
-#include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <time.h>
 #include <errno.h>
+#include <sys/types.h>
 #include <pwd.h>
+
 #include <termios.h>
-#include <unistd.h>          
-
-
-// Constantes que serão usadas no protocolo
-
-#define TAM_MAX_DADOS 127               // Tamanho máximo dos dados (127 bytes)
-#define MAX_NOME 63                     // Máximo de bytes de nome
-#define MAX_TIMEOUT 500000              // Quantidade máxima de retransmissões
-#define DURACAO_TIMEOUT 5               // Duração do timeout
-
-
-// Constantes que serão usadas no jogo
-
-#define DIR_OBJETOS "./objetos/"        // Diretório de onde serão enviados os tesouros
-#define MAX_GRID 8                      // Tamanho máximo da grid do mapa
-#define MAX_TESOUROS 8                  // Quantidade máxima de tesouros no mapa
+#include <unistd.h>      // Para usleep()
+#include <sys/time.h>    // Para struct timeval
+#include <strings.h>     // Para strcasecmp()
+#include "rawSocket.h"   // Incluir o raw socket
 
 
 
-// Todos os tipos de mensagem e seus respectivos códigos
+#define MAX_FRAME 127               // ok
+#define MAX_RETRY 3                 // ok
+#define TIMEOUT_S 1                 // ok
+#define MAX_ESPACO 1048576          // ok (não usa)
+#define MAX_NOME 63                 // ok (não usa)
+#define PORTA_CLIENTE 23623        // ok
+#define PORTA_SERVIDOR 43531       // ok
+
+#define INTERFACE "enp0s31f6"        
+
+
+#define TAMANHO_MAPA 8              
+#define MAX_TESOUROS 8              
+
+#define PASTA_OBJETOS "./objetos/"  
+
+
+//////////// Tipos de mensagem  ////////////
 
 typedef enum {
-    MSG_ACK = 0,                   
-    MSG_NACK = 1,                  
-    MSG_OK_ACK = 2,                
-    MSG_START = 3,          
-    MSG_TAMANHO = 4,               
-    MSG_DADOS = 5,                 
-    MSG_TEXTO_ACK_NOME = 6,        
-    MSG_VIDEO_ACK_NOME = 7,        
-    MSG_IMAGEM_ACK_NOME = 8,       
-    MSG_FIM_ARQUIVO = 9,           
-    MSG_MOVE_DIREITA = 10,      
-    MSG_MOVE_CIMA = 11,         
-    MSG_MOVE_BAIXO = 12,        
-    MSG_MOVE_ESQUERDA = 13,     
-    MSG_INTERFACE = 14,         
-    MSG_ERRO = 15,                 
+    MSG_ACK = 0,                                   
+    MSG_NACK = 1,                   
+    MSG_OK_ACK = 2,                 
+    MSG_START = 3,                  
+    MSG_TAMANHO = 4,                
+    MSG_DADOS = 5,                       
+    MSG_TEXTO_ACK_NOME = 6,         
+    MSG_VIDEO_ACK_NOME = 7,         
+    MSG_IMAGEM_ACK_NOME = 8,         
+    MSG_FIM_ARQUIVO = 9,            
+    MSG_MOVE_DIREITA = 10,          
+    MSG_MOVE_CIMA = 11,             
+    MSG_MOVE_BAIXO = 12,            
+    MSG_MOVE_ESQUERDA = 13,         
+    MSG_INTERFACE = 14,             
+    MSG_ERRO = 15,                  
+
 } mensagem_type;
 
-// Todos os tipos de erros e seus respectivos códigos
 
+//////////// Tipos de erro ////////////
 typedef enum {
-    ARQUIVO_INEXISTENTE = 1,
-    SEM_ACESSO = 2,
-    SEM_ARMAZENAMENTO = 3,
-    ARQUIVO_PESADO = 4,
-    MOVIMENTO_PROIBIDO = 5
+    SEM_PERMISSAO = 0,              
+    ESPACO_INSUFICIENTE = 1,        
 } erro_type;
 
-// Frame do pacote
 
-#pragma pack(push, 1)               // Para alinhar sem padding
+//////////// ESTRUTURAS DO PACOTE ////////////
+
+#pragma pack(push, 1)  
 typedef struct {
     
-    uint8_t marcador_inicio;        // 8 bits 
-    uint8_t tamanho : 7;            // 7 bits 
-    uint8_t sequencia_bit_0 : 1;    // 1 bit  (primeiro bit da sequencia) 
-    uint8_t sequencia_bits_4 : 4;   // 4 bits (restante da sequência)
-    uint8_t tipo : 4;               // 4 bits 
-    uint8_t checksum;               // 8 bits 
-    uint8_t dados[127];             // Dados (127 bytes)
-} struct_frame_pacote;
+    uint8_t marcador;              
+    
+    uint8_t tamanho : 7;           
+
+    uint8_t seq_inicio : 1;        
+    
+    uint8_t seq_fim : 4;           
+
+    uint8_t tipo : 4;              
+
+    uint8_t checksum;              
+
+    uint8_t dados[127];            
+
+} pack_t;
 #pragma pack(pop)
 
-// Estrutura de coordenadas
-
-typedef struct {
-    int x;
-    int y;
-} struct_coordenadas;
-
-
-// Tipos de tesouro e seus respectivos códigos
+ 
+//////////// Tipos de tesouro ////////////
 
 typedef enum {
-    TESOURO_TXT = 0,
-    TESOURO_IMG = 1,
-    TESOURO_MP4 = 2
+    TESOURO_TXT = 0,        
+    TESOURO_IMG = 1,        
+    TESOURO_VID = 2         
 } tesouro_type;
 
-// Estrutura dos tesouros
+//////////// Estrura de coordenada ////////////
+
+typedef struct {            
+    int x;                  
+    int y;                  
+} posicao_t;
+
+
+
+
+//////////// Estrutura de tesouro ////////////
 
 typedef struct {
-    struct_coordenadas posicao;
-    uint8_t tamanho[TAM_MAX_DADOS];
-    tesouro_type tipo;
-    char nome_tesouro[64];
-    char patch[256];
-    int achado;
-} struct_tesouro;
+    posicao_t posicao;              //
+    char nome_tesouro[64];          //
+    char patch[256];                // caminho_completo 
+    uint8_t tamanho[MAX_FRAME];     //
+    tesouro_type tipo;              //
+    int encontrado;                 
+} tesouro_t;
 
-// Estrutura do protocolo e sua situação
 
-typedef struct {
-    unsigned char sequencia_atual;
-    unsigned char sequencia_seguinte;
-    int socket_fd;
-    struct sockaddr_in ip_remoto;
-    socklen_t ip_tamanho;
-} struct_protocolo;
 
-// Estrutura do jogo
+
+//////////// Estrutura do estado de protocolo ////////////
 
 typedef struct {
-    int local_explorado[MAX_GRID][MAX_GRID];
-    int tesouros_achados;
-    int partida_iniciada;
-    struct_coordenadas local_player;
-    struct_tesouro tesouros[MAX_TESOUROS];
-} struct_jogo;
+    rawsocket_t rawsock;         // Raw socket context
+
+    uint8_t seq_atual;
+    unsigned char seq_esperada;
+
+    char ip_destino[16];            // IP de destino
+
+    unsigned short porta_destino;    // Porta de destino
+    unsigned short porta_origem;     // Porta de origem
+
+    pack_t pack;
+} protocolo_type;                
+
+
+
+
+//////////// Estrutura do estado do jogo ////////////
+
+typedef struct {
+    posicao_t local_player;                             
+    tesouro_t tesouros[MAX_TESOUROS];                   
+    int local_explorado[TAMANHO_MAPA][TAMANHO_MAPA];    
+    int tesouros_achados;                               
+    int partida_iniciada;                              
+
+} struct_jogo;                                      
+
+
+
 
 #pragma pack(push, 1)
 typedef struct{
-    struct_coordenadas posicao_player;
-    uint8_t pegar_tesouro;
-} struct_frame_mapa;
+    posicao_t posicao_player;       
+    uint8_t pegar_tesouro;          
+} struct_frame_mapa;                
 #pragma pack(pop)
 
-#define SOCKET_RAW SOCK_DGRAM
 
-// Estrutura para o funcionamento do mapa
 
+// Estrutura para informações do mapa do cliente
 typedef struct {
-    char local_explorado[MAX_GRID][MAX_GRID];
-    int numero_tesouros;
-    struct_coordenadas posicao_player;
-    struct_coordenadas local_tesouro[MAX_TESOUROS];
-} struct_mapa;
+    posicao_t posicao_player;                               //
+    posicao_t local_tesouro[MAX_TESOUROS];                  // coletar tesouro
+    char local_explorado[TAMANHO_MAPA][TAMANHO_MAPA];       //
+    int numero_tesouros;                                    //
+} mapa_cliente_t;                                           // colletTreasures
 
-// Estrutura para a interface do cliente
+
+
+
+
+
+
+
+// Estrutura para o estado do cliente
 typedef struct {
-    int jogo_ativo;
-    int tesouros_obtidos;
-    struct_protocolo protocolo;
-    struct_mapa mapa_ativo;
-} struct_cliente;
+    int jogo_ativo;                 //
+    int tesouros_obtidos;           //
+    protocolo_type protocolo;       //
+    mapa_cliente_t mapa_ativo;      //
+} struct_cliente;                   //
 
-// Funções auxiliares
 
-uint8_t ler_sequencia(struct_frame_pacote pack);
 
-void ler_tamanho_arquivo(const char* caminho, uint8_t tam[TAM_MAX_DADOS]);
 
-unsigned long ler_area_livre(const char* diretorio);
 
-int valida_arquivo(const char* caminho);
 
-mensagem_type tipo_arquivo(const char* nome_tesouro);
 
-// Funções do protocolo
+// Funcao de reenviar o pacote
+int reenvio(protocolo_type* estado, pack_t pack);
 
-int cria_pacote(struct_frame_pacote* pack, unsigned char seq, mensagem_type tipo, uint8_t* dados, unsigned short tamanho);
+// Funcao para checar a sequencia dos dados do pacote
+int seqCheck(uint8_t seqAtual, uint8_t seqPack);
 
-int envia_pacote(struct_protocolo* estado, const struct_frame_pacote* pack);
+// Funções do protocolo 
+int inicializar_protocolo(protocolo_type* estado, const char* ip_destino, unsigned short orig_port,
+                                 unsigned short porta_destino, const char* interface);
 
-int recebe_pacote(struct_protocolo* estado, struct_frame_pacote* pack);
+// Funções para gerenciamento do protocolo, conectando a porta do cliente e do servidor
+int criar_pacote(pack_t* pack, unsigned char seq, mensagem_type tipo, uint8_t* dados, unsigned short tamanho);
 
-int envia_ack(struct_protocolo* estado, uint8_t seq);
+// Funcao para enviar um pacote
+int enviar_pacote(protocolo_type* estado, const pack_t* pack); 
 
-int envia_nack(struct_protocolo* estado, uint8_t seq);
+// Funcao que recebe um pacote
+int receber_pacote(protocolo_type* estado, pack_t* pack);               
 
-int envia_ok_ack(struct_protocolo* estado, uint8_t seq);
+// Funcao que envia ack
+int enviar_ack(protocolo_type* estado, uint8_t seq);
 
-int envia_erro(struct_protocolo* estado, uint8_t seq, erro_type erro);
+// Funcao que envia nack
+int enviar_nack(protocolo_type* estado, uint8_t seq); 
 
-int aguarda_ack(struct_protocolo* estado);
+// Funcao que envia ok ack
+int enviar_ok_ack(protocolo_type* estado, uint8_t seq);
 
-// Funções do jogo
+// Funcao que envia erro
+int enviar_erro(protocolo_type* estado, uint8_t seq, erro_type erro);
 
-void setup_jogo(struct_jogo* jogo);
+// Funcao que espera o recebimento de um ack
+int esperar_ack(protocolo_type* estado);                                
 
-int move_player(struct_jogo* jogo, mensagem_type direcao);
+// Finaliza o protocolo fechando o raw socket
+void finalizar_protocolo(protocolo_type* estado);
 
-int valida_tesouro(struct_jogo* jogo, struct_coordenadas posicao);
+//////////// Funções do jogo ////////////
 
+// Comeca o jogo definindo posicoes 0 para o jogador e sorteia os tesouros, alem de colocar cada tipo no tesouro
+void setup_jogo(struct_jogo* jogo);                                     
+
+// Realiza a movimentacao do player alem de verificar se ele bateu na parede
+int move_player(struct_jogo* jogo, mensagem_type direcao); 
+
+// Retorna o indice do tesouro encontrado
+int valida_tesouro(struct_jogo* jogo, posicao_t posicao);   
+
+// Responsavel pela interface grafica do servidor
 void interface_servidor(struct_jogo* jogo);
 
-void interface_cliente(struct_cliente* cliente);
+// Responsavel por limpar a interface
+void reseta_interface();                                                
 
-void reseta_interface();
+//////////// Funções auxiliares ////////////
+
+// Retorna a sequencia do pacote
+uint8_t getSeq(pack_t pack);
+
+// Retorna o tamanho do arquivo
+void obter_tamanho_arquivo(const char* caminho, uint8_t tam[MAX_FRAME]);
+
+// Determina o tipo de arquivo se e mp4, jpg ou txt
+mensagem_type determinar_tipo_arquivo(const char* nome_tesouro);
+
+// Ve se o arquivo tem espaco o suficiente
+uint64_t obter_espaco_livre(const char* caminho);
 
 #endif // PROTOCOLO_H
